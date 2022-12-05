@@ -1,0 +1,403 @@
+---
+title: "Final_VyM_RichardRivas"
+output:
+  html_document: default
+  pdf_document: default
+date: '2022-09-27'
+---
+
+#Librerías Requeridas y Directorio
+```{r setup, include=FALSE}
+#install.packages('conjoint')
+#install.packages("readxl")
+#Code to generate factorial orthogonal designs
+
+#install.packages("openxlsx")
+#install.packages('fastDummies')
+#install.packages("knitr")
+#install.packages("markdown")
+
+#library("knitr")
+#library("markdown")
+
+library("openxlsx")
+library("conjoint")
+library("readxl")
+library("tidyverse")
+library("fastDummies")
+library("stringr")
+library("ggplot2")
+library("gridExtra")
+library("NbClust")
+library("reshape2")
+library("plotly")
+
+setwd("C:/Users/Richard/OneDrive/UTDT/M3/Ventas y Marketing/TP")
+
+#knitr::opts_chunk$set(echo = TRUE)
+#knitr::opts_knit$set(root.dir = "")
+getwd()
+
+```
+
+#Generación del Diseño de Encuesta
+```{r setup, include=FALSE}
+
+c <- expand.grid(
+  Lugar <- c("Bariloche", "Salta", "Mendoza", "El Chaltén"),
+  Hotel <- c("Básico", "Standard", "De Lujo"),
+  Precio <- c("$60000", "$90000","$120000"),
+  dias <- c("3", "4", "5"))
+
+#change the column names to these
+names(c) <- c("Lugar", "Hotel", "Precio", "Dias")
+
+design <- caFactorialDesign(data=c, type="fractional")
+code <- caEncodedDesign(design)
+encodedorthodesign <- data.frame(design, code)
+print(encodedorthodesign)
+
+```
+
+#Procesamiento de Raw Data
+```{r}
+
+#Extraemos variables dummies del diseño de encuesta
+dummy_vars <- dummy_cols(encodedorthodesign, select_columns = c('Lugar','Hotel','Precio','Dias'))
+
+dummy_vars <- 
+  dummy_vars %>% select(5:21)
+
+#Leemos dataset con las respuestas
+survey_data <- read_excel("C:/Users/Richard/OneDrive/UTDT/M3/Ventas y Marketing/TP/TP Ventas y Marketing (respuestas).xlsx", sheet = "Transposed")
+survey_data <- 
+  survey_data %>% select(2:19)
+
+#Combinamos datasets
+merged_data <- cbind(dummy_vars, survey_data)
+
+merged_data <- 
+  merged_data %>% select(5:35)
+
+#Pasamos columnas a rows
+df <- pivot_longer(merged_data, 14:31, names_to = "ID", values_to = "Preference")
+df$ID <- str_replace(df$ID, "Respondent ", "")
+
+df <- df %>% 
+  rename(
+    Precio_60k = "Precio_$60000",
+    Precio_90k  = "Precio_$90000",
+    Precio_120k  = "Precio_$120000",
+    Hotel_Basico = "Hotel_Básico",
+    Hotel_Lujo = "Hotel_De Lujo"
+    )
+
+```
+
+
+#Preguntas
+
+1. Realice una regresión lineal utilizando R o Excel para estimar los valores parciales de cada uno de sus encuestados. 
+2. Para cada encuestado, determine la importancia relativa de cada atributo.
+3. Grafique los valores parciales asociados al precio de cada encuestado. ¿Cuáles son las implicancias de estos gráficos en las decisiones de gestión?
+
+```{r }
+n_respondents <- length(unique(df$ID))
+
+cols_for_clustering = c("ID","Intercept","Bariloche", "Salta", "Mendoza","El Chaltén","H_Basico", "H_Standard","H_DeLujo", "Precio_60k", "Precio_90k", "Precio_120k","Dias_3", "Dias_4", "Dias_5","WTP","Perfil")
+
+df_for_clustering <- data.frame(matrix(nrow = 0, ncol = length(cols_for_clustering)))
+
+colnames(df_for_clustering) <- cols_for_clustering
+
+#Creamos las variables de precio en formato númerico para calcular el willingness to pay
+Precio_bajo <- 60000
+Precio_medio <- 90000
+Precio_alto <- 120000
+
+for (i in 1:n_respondents){
+
+#Creamos las regresiones para cada encuestado
+reg = lm(Preference ~ Lugar_Bariloche + Lugar_Salta + Lugar_Mendoza + Hotel_Basico + Hotel_Standard + Precio_60k + Precio_90k + Dias_3 + Dias_4, filter(df,ID == i))
+
+
+lm_summary = summary(reg)
+
+  print("_____________________________________")
+  print(sprintf("Regresion encuestado: %d", i))
+  print("_____________________________________")
+  print(lm_summary)
+  
+coeffs <- as.vector(lm_summary$coefficients[,1])
+
+#Creamos utilidates parciales para cada atributo
+pw_ut <- c(coeffs[1], coeffs[2:4], 0, coeffs[5:6], 0, coeffs[7:8], 0, coeffs[9:10], 0)
+
+#Definimos Niveles
+levels <- c("Intercept", "Bariloche", "Salta", "Mendoza","El Chaltén","H_Basico", "H_Standard","H_DeLujo", "Precio_60k", "Precio_90k", "Precio_120k","Dias_3", "Dias_4", "Dias_5")
+
+#Definimos Atributos
+attributes <- c("Intercept", rep(c("Lugar"), times = 4), rep(c("Hotel"), times = 3) , 
+                rep(c("Precio"), times = 3), rep(c("Dias"), times = 3))
+
+#Creamos Dataframe de utilidades parciales
+pw_ut_df <- data.frame(Variable = attributes, Levels = levels, pw_ut)
+
+Precio_p <- subset(pw_ut_df, pw_ut_df$Variable == "Precio")
+Lugar_p <- subset(pw_ut_df, pw_ut_df$Variable == "Lugar")
+Dias_p <- subset(pw_ut_df, pw_ut_df$Variable == "Dias")
+Hotel_p <- subset(pw_ut_df, pw_ut_df$Variable == "Hotel")
+
+gg1 <- ggplot(data = Precio_p, aes(x = Levels, y = pw_ut, group = 1)) + geom_line() + geom_point() + ggtitle(paste("Precio encuestado", i)) + ylab("Part-Worth Utilities")
+gg2 <- ggplot(data = Lugar_p, aes(x = Levels, y = pw_ut, group = 1)) + geom_line() + geom_point() + ggtitle("Lugar") + ylab("Part-Worth Utilities")
+gg3 <- ggplot(data = Dias_p, aes(x = Levels, y = pw_ut, group = 1)) + geom_line() + geom_point() + ggtitle("Dias") + ylab("Part-Worth Utilities")
+gg4 <- ggplot(data = Hotel_p, aes(x = Levels, y = pw_ut, group = 1)) + geom_line() + geom_point() + ggtitle("Hotel") + ylab("Part-Worth Utilities")
+
+
+#Guardamos los gráficos de atributos generales y los de precio en directorios diferentes
+png(file=paste("Attribute_Charts/pw_utilities_user_", i,".png", sep= ""))
+grid.arrange(gg1, gg2, gg3, gg4)
+dev.off()
+
+
+png(file=paste("Price_Charts/price_user_", i,".png", sep= ""))
+grid.arrange(gg1)
+dev.off()
+
+#Calculamos rangos por atributos
+Precio_p_range <- max(Precio_p$pw_ut) - min(Precio_p$pw_ut)
+Lugar_p_range <- max(Lugar_p$pw_ut) - min(Lugar_p$pw_ut)
+Dias_p_range <- max(Dias_p$pw_ut) - min(Dias_p$pw_ut)
+Hotel_p_range <- max(Hotel_p$pw_ut) - min(Hotel_p$pw_ut)
+total_range <- sum(Precio_p_range + Lugar_p_range + Dias_p_range + Hotel_p_range)
+
+#Calculamos importancias relativas
+Precio_p_importance <- Precio_p_range/total_range
+Lugar_p_importance <- Lugar_p_range/total_range
+Dias_p_importance <- Dias_p_range/total_range
+Hotel_p_importance <- Hotel_p_range/total_range
+
+relative_importance <- data.frame(Attribute = c("Precio", "Lugar", "Dias", "Hotel"),
+                                    Importance = c(Precio_p_importance, Lugar_p_importance, Dias_p_importance, Hotel_p_importance))
+
+#Generamos gráficos de importancia relativa por encuestado
+g_relative <- ggplot(relative_importance, aes(x = Attribute, y = Importance)) + geom_bar(stat = "identity") + ggtitle(paste("Importancia Relativa de Atributos: ",i))
+
+#Los guardamos en un directorio
+png(file=paste("Relative_Importances/Rel_imp_", i,".png", sep= ""))
+grid.arrange(g_relative)
+dev.off()
+
+#Creamos variable de coeficientes para la segunda variable más importante: Hotel
+paquete_coeffs <- subset(pw_ut_df, pw_ut_df$Variable == "Hotel")
+
+
+#Calculamos willingness to pay
+hotel_ut_range <- Hotel_p$pw_ut[Hotel_p$Levels == "H_DeLujo"] - Hotel_p$pw_ut[Hotel_p$Levels == "H_Basico"]
+
+price_range <- Precio_alto - Precio_bajo
+
+price_ut_range <- Precio_p$pw_ut[Precio_p$Levels == "Precio_60k"] - Precio_p$pw_ut[Precio_p$Levels == "Precio_120k"]
+
+ut_monetary_value <- price_range/price_ut_range
+
+willingness_to_pay <- ut_monetary_value * hotel_ut_range 
+
+#Creamos dos nuevos perfiles para ser evaluados
+#Perfil A:
+#3Días, 90K, Mendoza, H_Standard
+
+#Perfil B:
+#5Días, 60k, El Chaltén, H_Básico
+
+ut_profile_a <- sum(pw_ut_df$pw_ut[pw_ut_df$Levels == "Intercept"] + pw_ut_df$pw_ut[pw_ut_df$Levels == "Dias_3"]+ pw_ut_df$pw_ut[pw_ut_df$Levels == "Precio_90k"] + pw_ut_df$pw_ut[pw_ut_df$Levels == "Mendoza"] + pw_ut_df$pw_ut[pw_ut_df$Levels == "H_Standard"])
+
+ut_profile_b <- sum(pw_ut_df$pw_ut[pw_ut_df$Levels == "Intercept"] + pw_ut_df$pw_ut[pw_ut_df$Levels == "Dias_5"]+ 
+                      pw_ut_df$pw_ut[pw_ut_df$Levels == "Precio_60k"] + pw_ut_df$pw_ut[pw_ut_df$Levels == "El Chaltén"] + 
+                      pw_ut_df$pw_ut[pw_ut_df$Levels == "H_Basico"])
+
+print(paste("utilidad a:", ut_profile_a))
+print(paste("utilidad b:", ut_profile_b))
+
+if (ut_profile_a > ut_profile_b){
+  profile_a <- 1
+  
+}else{
+  profile_a <- 0
+}
+  
+#Guardamos toda la información en un nuevo dataset para realizar la segmentación y métrica de market share
+respondent_data <- c(i, pw_ut, willingness_to_pay, profile_a)
+respondent_data_frame <- as.data.frame(t(respondent_data))
+colnames(respondent_data_frame) <- cols_for_clustering
+
+df_for_clustering <- rbind(df_for_clustering, respondent_data_frame)
+
+}
+```
+# WTP por Usuarios
+```{r}
+
+options(scipen=999)
+ggplot(filter(df_for_clustering,df_for_clustering$WTP >= -50000), aes(x = WTP)) + 
+  geom_histogram(color = "black", fill = "#1FA187") +
+  labs(title = "Disposición a pagar por cambio en Hotel",
+       x =  NULL) +
+    theme_minimal() 
+```
+
+
+# Validación de Número de Clusters
+```{r}
+#set.seed(123)
+clustering_cols <- c("Intercept","Bariloche", "Salta", "Mendoza","H_Basico", "H_Standard", "Precio_60k", "Precio_90k","Dias_3", "Dias_4")
+clustering_vars <- select(df_for_clustering, clustering_cols)
+
+numero_clusters <- NbClust(data = clustering_vars, distance = "euclidean", min.nc = 3,
+                           max.nc = 7, method = "kmeans", index = 'all')
+
+```
+# Segmentación
+```{r}
+
+clusters = kmeans(x = clustering_vars, centers = 3, nstart = 50)
+
+# Agrego los clusters al dataframe de 5000 usuarios 
+df_for_clustering$cluster = clusters$cluster
+
+# Obtengo los centroides
+cluster_centers = df_for_clustering %>% group_by(cluster) %>% summarise(mean_intercept = mean(Intercept), mean_Bariloche = mean(Bariloche), mean_Salta = mean(Salta), mean_Mendoza = mean(Mendoza), mean_HBasico = mean(H_Basico), mean_HStandard = mean(H_Standard), mean_P60k = mean(Precio_60k), mean_P90k = mean(Precio_90k), mean_Dias3 = mean(Dias_3), mean_Dias4 = mean(Dias_4), mean_WTP = mean(WTP))
+print(cluster_centers)
+
+```
+# Clusters por media de utilidad
+```{r}
+
+test = melt(select(cluster_centers,c("cluster","mean_intercept","mean_Bariloche","mean_Salta","mean_Mendoza","mean_HBasico","mean_HStandard","mean_P60k","mean_P90k","mean_Dias3","mean_Dias4")) ,  id.vars = 'cluster', variable.name = 'series')
+test$cluster = as.factor(test$cluster)
+
+test_wtp = melt(select(cluster_centers,c("cluster","mean_WTP")) ,  id.vars = 'cluster', variable.name = 'series')
+test_wtp$cluster = as.factor(test_wtp$cluster)
+
+# Analisis de los clusters
+
+fig <- plot_ly(test, x = ~series, y = ~value, color = ~cluster, name = ~cluster, type = 'scatter', mode = 'lines+markers')
+
+fig = fig %>% layout(title = 'Cluster centroids')
+
+fig
+```
+
+# WTP por Clusters
+```{r}
+fig_2 <- plot_ly(test_wtp, x = ~series, y = ~value, color = ~cluster, name = ~cluster, type = 'bar')
+
+fig_2 = fig_2 %>% layout(title = 'Cluster centroids - WTP')
+
+fig_2
+
+```
+# Market Share
+```{r}
+mean(df_for_clustering$Perfil)
+```
+
+## Análisis General
+
+```{r }
+
+#Generamos la regresión para todos los encuestados
+reg_total = reg = lm(Preference ~ Lugar_Bariloche + Lugar_Salta + Lugar_Mendoza + Hotel_Basico + Hotel_Standard + Precio_60k + Precio_90k + Dias_3 + Dias_4, df)
+
+lm_summary = summary(reg_total)
+
+print(lm_summary)
+
+#Creamos vector de coeficientes
+coeffs <- as.vector(lm_summary$coefficients[,1])
+
+#Creamos utilidates parciales para cada atributo
+pw_ut <- c(coeffs[1], coeffs[2:4], 0, coeffs[5:6], 0, coeffs[7:8], 0, coeffs[9:10], 0)
+
+#Definimos Niveles
+levels <- c("Intercept", "Bariloche", "Salta", "Mendoza","El Chaltén","H_Basico", "H_Standard","H_DeLujo", "Precio_60k", "Precio_90k", "Precio_120k","Dias_3", "Dias_4", "Dias_5")
+
+#Definimos Atributos
+attributes <- c("Intercept", rep(c("Lugar"), times = 4), rep(c("Hotel"), times = 3) , 
+                rep(c("Precio"), times = 3), rep(c("Dias"), times = 3))
+
+#Creamos Dataframe de utilidades parciales
+pw_ut_df <- data.frame(Variable = attributes, Levels = levels, pw_ut)
+
+#Definimos subsets para cada atributo (_p refiriéndose a "paquete turístico")
+Precio_p <- subset(pw_ut_df, pw_ut_df$Variable == "Precio")
+Lugar_p <- subset(pw_ut_df, pw_ut_df$Variable == "Lugar")
+Dias_p <- subset(pw_ut_df, pw_ut_df$Variable == "Dias")
+Hotel_p <- subset(pw_ut_df, pw_ut_df$Variable == "Hotel")
+
+#Graficamos Importancia de Atributos
+gg1 <- ggplot(data = Precio_p, aes(x = Levels, y = pw_ut, group = 1)) + geom_line() + geom_point() + ggtitle("Precio") + ylab("Part-Worth Utilities")
+gg2 <- ggplot(data = Lugar_p, aes(x = Levels, y = pw_ut, group = 1)) + geom_line() + geom_point() + ggtitle("Lugar") + ylab("Part-Worth Utilities")
+gg3 <- ggplot(data = Dias_p, aes(x = Levels, y = pw_ut, group = 1)) + geom_line() + geom_point() + ggtitle("Dias") + ylab("Part-Worth Utilities")
+gg4 <- ggplot(data = Hotel_p, aes(x = Levels, y = pw_ut, group = 1)) + geom_line() + geom_point() + ggtitle("Hotel") + ylab("Part-Worth Utilities")
+
+
+grid.arrange(gg1, gg2, gg3, gg4)
+
+#Calculamos rangos para cada atributo
+Precio_p_range <- max(Precio_p$pw_ut) - min(Precio_p$pw_ut)
+Lugar_p_range <- max(Lugar_p$pw_ut) - min(Lugar_p$pw_ut)
+Dias_p_range <- max(Dias_p$pw_ut) - min(Dias_p$pw_ut)
+Hotel_p_range <- max(Hotel_p$pw_ut) - min(Hotel_p$pw_ut)
+total_range <- sum(Precio_p_range + Lugar_p_range + Dias_p_range + Hotel_p_range)
+
+#calculamos la importancias de cada atributo dividiéndolas entre el rango total
+Precio_p_importance <- Precio_p_range/total_range
+Lugar_p_importance <- Lugar_p_range/total_range
+Dias_p_importance <- Dias_p_range/total_range
+Hotel_p_importance <- Hotel_p_range/total_range
+
+#Creamos un dataset con las importancias relativas
+relative_importance <- data.frame(Attribute = c("Precio", "Lugar", "Dias", "Hotel"),
+                                    Importance = c(Precio_p_importance, Lugar_p_importance, Dias_p_importance, Hotel_p_importance))
+
+#Ploteamos
+g_relative <- ggplot(relative_importance, aes(x = Attribute, y = Importance)) + geom_bar(stat = "identity") + ggtitle(paste("Importancia Relativa de Atributos: "))
+
+grid.arrange(g_relative)
+
+
+#Creamos las variables de precio en formato númerico para calcular el willingness to pay
+Precio_bajo <- 60000
+Precio_medio <- 90000
+Precio_alto <- 120000
+
+attributes <- c("Lugar","Dias","Hotel")
+
+relative_importance_wp <- c(Lugar_p_importance, Dias_p_importance, Hotel_p_importance)
+
+most_important_attribute_coef <- relative_importance_wp[which.max(relative_importance_wp)]
+
+most_important_attribute <- attributes[which.max(relative_importance_wp)]
+
+
+paquete_hotel_coeffs <- subset(pw_ut_df, pw_ut_df$Variable == most_important_attribute)
+
+hotel_max_ut <- max(paquete_hotel_coeffs$pw_ut)
+hotel_min_ut <- min(paquete_hotel_coeffs$pw_ut)
+
+ut_range_hotel <- hotel_max_ut - hotel_min_ut
+
+price_range <- Precio_alto - Precio_bajo
+price_ut_range <- Precio_p$pw_ut[Precio_p$Levels == "Precio_60k"] - Precio_p$pw_ut[Precio_p$Levels == "Precio_120k"]
+
+ut_monetary_value <- price_range/price_ut_range #$23.125
+
+willingness_to_pay <- ut_monetary_value * ut_range_hotel #$45.173
+
+
+```
+
+
+
+
